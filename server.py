@@ -25,11 +25,20 @@ chroma_client = chromadb.PersistentClient(path="./neuron_memory")
 app = FastAPI()
 
 # ---------------------------------------------------------
-# ENDPOINT 0: THE HEARTBEAT (Keeps the free server awake)
+# ENDPOINT 0: THE DOUBLE HEARTBEAT (Keeps Render AND Supabase awake)
 # ---------------------------------------------------------
 @app.get("/")
 def keep_alive():
-    return {"status": "NeuronDeck Engine is Awake"}
+    # Make a tiny, harmless request to Supabase to reset its 7-day sleep timer
+    try:
+        requests.get(
+            f"{SUPABASE_URL}/rest/v1/private_card_versions?limit=1",
+            headers={"apikey": SUPABASE_ANON_KEY}
+        )
+    except Exception as e:
+        print(f"Heartbeat DB Ping failed: {e}")
+        
+    return {"status": "NeuronDeck Engine & Database are Awake"}
 
 app.add_middleware(
     CORSMiddleware,
