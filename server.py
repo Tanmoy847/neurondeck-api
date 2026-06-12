@@ -24,6 +24,13 @@ chroma_client = chromadb.PersistentClient(path="./neuron_memory")
 
 app = FastAPI()
 
+# ---------------------------------------------------------
+# ENDPOINT 0: THE HEARTBEAT (Keeps the free server awake)
+# ---------------------------------------------------------
+@app.get("/")
+def keep_alive():
+    return {"status": "NeuronDeck Engine is Awake"}
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
