@@ -116,7 +116,7 @@ async def generate_learning_chain(request: TopicRequest, authorization: str = He
             openrouter_response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "http://localhost:5500", "X-Title": "NeuronDeck"},
-                json={"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
+                json={"model": "google/gemini-2.0-flash-lite-preview-02-05:free", "messages": [{"role": "user", "content": prompt}]}
             )
             
             response_json = openrouter_response.json()
@@ -198,7 +198,7 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
         openrouter_response = requests.post(
             url="https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
+            json={"model": "google/gemini-2.0-flash-lite-preview-02-05:free", "messages": [{"role": "user", "content": prompt}]}
         )
         
         response_json = openrouter_response.json()
