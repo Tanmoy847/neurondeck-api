@@ -15,7 +15,6 @@ load_dotenv()
 # ==========================================
 # CONFIGURATION & SECRETS (SECURED)
 # ==========================================
-# Python will now securely fetch these from Render's dashboard, hiding them from GitHub!
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
@@ -29,7 +28,6 @@ app = FastAPI()
 # ---------------------------------------------------------
 @app.get("/")
 def keep_alive():
-    # Make a tiny, harmless request to Supabase to reset its 7-day sleep timer
     try:
         requests.get(
             f"{SUPABASE_URL}/rest/v1/private_card_versions?limit=1",
@@ -115,11 +113,18 @@ async def generate_learning_chain(request: TopicRequest, authorization: str = He
         try:
             openrouter_response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "http://localhost:5500", "X-Title": "NeuronDeck"},
-                json={"model": "google/gemini-2.0-flash-lite-preview-02-05:free", "messages": [{"role": "user", "content": prompt}]}
+                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://neurondeck.vercel.app", "X-Title": "NeuronDeck"},
+                json={"model": "meta-llama/llama-3-8b-instruct:free", "messages": [{"role": "user", "content": prompt}]}
             )
             
             response_json = openrouter_response.json()
+            
+            # THE SAFETY NET: If OpenRouter rejects us, print the exact reason!
+            if "error" in response_json:
+                error_msg = response_json['error'].get('message', str(response_json['error']))
+                print(f"OpenRouter API Blocked Request: {error_msg}")
+                raise Exception(f"AI Error: {error_msg}")
+
             ai_output = response_json['choices'][0]['message']['content']
             
             match = re.search(r'\{.*\}', ai_output, re.DOTALL)
@@ -175,7 +180,6 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
     clean_title = request.card_title.replace(" (Simplified)", "")
     print(f"Confusion Mode Triggered for Card {request.sequence}: {clean_title}")
 
-    # 1. Ask OpenRouter to generate the new version
     prompt = f"""
     A user is confused by a flashcard about the topic: "{request.topic}".
     The card title is: "{clean_title}".
@@ -198,13 +202,13 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
         openrouter_response = requests.post(
             url="https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "google/gemini-2.0-flash-lite-preview-02-05:free", "messages": [{"role": "user", "content": prompt}]}
+            json={"model": "meta-llama/llama-3-8b-instruct:free", "messages": [{"role": "user", "content": prompt}]}
         )
         
         response_json = openrouter_response.json()
         
         if "error" in response_json:
-            raise Exception(f"AI Provider Rate Limit/Error: {response_json['error'].get('message')}")
+            raise Exception(f"AI Provider Rate Limit/Error: {response_json['error'].get('message', str(response_json['error']))}")
             
         ai_output = response_json['choices'][0]['message']['content']
         match = re.search(r'\{.*\}', ai_output, re.DOTALL)
@@ -214,7 +218,6 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
         print(f"Confusion Engine Error: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to clarify content.")
 
-    # 2. Fetch existing history from DB
     get_url = f"{SUPABASE_URL}/rest/v1/private_card_versions?user_id=eq.{user_id}&sequence_id=eq.{request.sequence}"
     existing_versions_req = requests.get(get_url, headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}"})
     
@@ -230,7 +233,6 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
             row_id = existing_row['id']
             print(f"Database row found. Current saved versions: {len(version_history)}")
 
-    # 3. Compile the array safely
     if not version_history:
         print("No history found. Creating original baseline.")
         version_history.append({
@@ -239,14 +241,12 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
             "fullText": request.current_text
         })
         
-    # Append the new text to make it permanently grow
     version_history.append({
         "title": refinedCard["title"],
         "shortText": refinedCard["shortText"],
         "fullText": refinedCard["fullText"]
     })
     
-    # 4. STRICT DATABASE ENFORCEMENT
     if row_id:
         db_res = requests.patch(
             f"{SUPABASE_URL}/rest/v1/private_card_versions?id=eq.{row_id}",
@@ -265,7 +265,6 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
             }
         )
 
-    # CRITICAL: If Supabase refuses to save, Python will crash the process and warn you immediately.
     if db_res.status_code not in (200, 201, 204):
         error_msg = db_res.text
         print(f"\nCRITICAL DATABASE BLOCK: {error_msg}\n")
