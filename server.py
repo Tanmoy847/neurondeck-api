@@ -9,11 +9,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Load local .env file if running on your laptop
+# Load local .env file if running locally
 load_dotenv()
 
 # ==========================================
-# CONFIGURATION & SECRETS (SECURED)
+# CONFIGURATION & SECRETS
 # ==========================================
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
@@ -24,7 +24,7 @@ chroma_client = chromadb.PersistentClient(path="./neuron_memory")
 app = FastAPI()
 
 # ---------------------------------------------------------
-# ENDPOINT 0: THE DOUBLE HEARTBEAT (Keeps Render AND Supabase awake)
+# ENDPOINT 0: DOUBLE HEARTBEAT
 # ---------------------------------------------------------
 @app.get("/")
 def keep_alive():
@@ -81,7 +81,7 @@ async def generate_learning_chain(request: TopicRequest, authorization: str = He
 
     existing_results = global_memory.get(ids=[storage_id])
     
-    if existing_results and existing_results['documents'] and len(existing_results['documents']) > 0:
+    if existing_results and existing_results.get('documents') and len(existing_results['documents']) > 0:
         print(f"Serving chunk from global database index: {storage_id}")
         base_cards = json.loads(existing_results['documents'][0])
     else:
@@ -91,35 +91,41 @@ async def generate_learning_chain(request: TopicRequest, authorization: str = He
         You are an expert university professor and strict academic tutor. 
         Create a highly accurate, strictly sequenced learning chain about: "{request.topic}".
         
-        CRITICAL SEQUENCE RULE:
-        - This is part of a continuous learning chain. 
-        - You must start numbering your card sequences from number: {request.start_sequence}.
-        - Generate exactly 4 additional progressive cards moving forward logically from that point.
-        
-        You MUST respond with ONLY a valid JSON object in this exact structure:
+        CRITICAL RULES:
+        - Start numbering card sequences from number: {request.start_sequence}.
+        - Generate exactly 4 progressive cards moving forward logically.
+        - NEVER use unescaped double quotes inside your text values. Use single quotes for names/terms (e.g. 'AND' gate, 'NOT' gate).
+        - Respond ONLY with a valid JSON object matching this schema:
         {{
           "cards": [
             {{
               "sequence": {request.start_sequence},
               "title": "Card Title",
-              "shortText": "A one-sentence summary of the concept.",
-              "fullText": "A detailed 2-3 paragraph explanation. Use line breaks (\\n) for readability."
+              "shortText": "A one-sentence summary.",
+              "fullText": "A detailed 2-3 paragraph explanation. Use \\n for line breaks."
             }}
           ]
         }}
-        Do not include markdown blocks, just output the raw JSON object. Do not say any other words.
         """
 
         try:
             openrouter_response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
-                headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://neurondeck.vercel.app", "X-Title": "NeuronDeck"},
-                json={"model": "google/gemma-4-26b-a4b-it:free", "messages": [{"role": "user", "content": prompt}]}
+                headers={
+                    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                    "Content-Type": "application/json",
+                    "HTTP-Referer": "https://neurondeck.vercel.app",
+                    "X-Title": "NeuronDeck"
+                },
+                json={
+                    "model": "google/gemma-4-26b-a4b-it:free",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {"type": "json_object"}
+                }
             )
             
             response_json = openrouter_response.json()
             
-            # THE SAFETY NET: If OpenRouter rejects us, print the exact reason!
             if "error" in response_json:
                 error_msg = response_json['error'].get('message', str(response_json['error']))
                 print(f"OpenRouter API Blocked Request: {error_msg}")
@@ -127,9 +133,14 @@ async def generate_learning_chain(request: TopicRequest, authorization: str = He
 
             ai_output = response_json['choices'][0]['message']['content']
             
-            match = re.search(r'\{.*\}', ai_output, re.DOTALL)
+            # Clean potential markdown code blocks
+            clean_output = re.sub(r'^```json\s*|^```\s*|```$', '', ai_output.strip(), flags=re.MULTILINE)
+            match = re.search(r'\{.*\}', clean_output, re.DOTALL)
+            if not match:
+                raise Exception("No valid JSON object found in response.")
+            
             clean_json_string = match.group(0)
-            new_chain_data = json.loads(clean_json_string)
+            new_chain_data = json.loads(clean_json_string, strict=False)
             
             base_cards = new_chain_data['cards']
             
@@ -141,11 +152,12 @@ async def generate_learning_chain(request: TopicRequest, authorization: str = He
             
         except Exception as e:
             print(f"Engine Error: {str(e)}")
+            if 'ai_output' in locals():
+                print(f"Raw Output Received:\n{ai_output}")
             raise HTTPException(status_code=500, detail="Failed to process knowledge chain cycle.")
 
-    # 2. Inject Private User Versions Safely
+    # Inject Private User Versions
     token = authorization.split(" ")[1]
-    
     get_url = f"{SUPABASE_URL}/rest/v1/private_card_versions?user_id=eq.{user_id}"
     db_response = requests.get(get_url, headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}"})
     
@@ -169,55 +181,63 @@ async def generate_learning_chain(request: TopicRequest, authorization: str = He
     return {"cards": base_cards}
 
 # ---------------------------------------------------------
-# ENDPOINT 2: CONFUSION ENGINE (Surgical Re-generation)
+# ENDPOINT 2: CONFUSION ENGINE
 # ---------------------------------------------------------
 @app.post("/api/clarify")
 async def clarify_card(request: ClarifyRequest, authorization: str = Header(None)):
     user_id = verify_user(authorization)
     token = authorization.split(" ")[1]
     clean_topic = request.topic.lower().strip()
-    
     clean_title = request.card_title.replace(" (Simplified)", "")
+    
     print(f"Confusion Mode Triggered for Card {request.sequence}: {clean_title}")
 
     prompt = f"""
     A user is confused by a flashcard about the topic: "{request.topic}".
     The card title is: "{clean_title}".
-    The current explanation that they find too difficult is: "{request.current_text}".
+    The current explanation: "{request.current_text}".
     
     TASK:
-    Regenerate the content for THIS SPECIFIC CARD ONLY. Explain it using a completely different perspective, a more intuitive style, and simple, vivid, real-world analogies.
+    Regenerate content for THIS SPECIFIC CARD ONLY with intuitive real-world analogies.
     
-    You MUST respond with ONLY a valid JSON object in this exact structure:
+    CRITICAL RULES:
+    - NEVER use unescaped double quotes inside your text values. Use single quotes instead.
+    - Respond ONLY with a valid JSON object matching this schema:
     {{
       "sequence": {request.sequence},
       "title": "{clean_title} (Simplified)",
-      "shortText": "A new, highly intuitive one-sentence summary.",
-      "fullText": "The new explanation. 2 paragraphs max. Use simple analogies. Use line breaks (\\n) for readability."
+      "shortText": "An intuitive one-sentence summary.",
+      "fullText": "New explanation using simple analogies. Use \\n for line breaks."
     }}
-    Do not include markdown blocks, just output the raw JSON object. Do not say any other words.
     """
 
     try:
         openrouter_response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
+            url="[https://openrouter.ai/api/v1/chat/completions](https://openrouter.ai/api/v1/chat/completions)",
             headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "google/gemma-4-26b-a4b-it:free", "messages": [{"role": "user", "content": prompt}]}
+            json={
+                "model": "google/gemma-4-26b-a4b-it:free",
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"}
+            }
         )
         
         response_json = openrouter_response.json()
-        
         if "error" in response_json:
-            raise Exception(f"AI Provider Rate Limit/Error: {response_json['error'].get('message', str(response_json['error']))}")
+            raise Exception(f"AI Provider Error: {response_json['error'].get('message', str(response_json['error']))}")
             
         ai_output = response_json['choices'][0]['message']['content']
-        match = re.search(r'\{.*\}', ai_output, re.DOTALL)
-        refinedCard = json.loads(match.group(0)) 
+        clean_output = re.sub(r'^```json\s*|^```\s*|```$', '', ai_output.strip(), flags=re.MULTILINE)
+        match = re.search(r'\{.*\}', clean_output, re.DOTALL)
+        refinedCard = json.loads(match.group(0), strict=False) 
         
     except Exception as e:
         print(f"Confusion Engine Error: {str(e)}")
+        if 'ai_output' in locals():
+            print(f"Raw Output Received:\n{ai_output}")
         raise HTTPException(status_code=500, detail="Failed to clarify content.")
 
+    # Supabase Version Persistence
     get_url = f"{SUPABASE_URL}/rest/v1/private_card_versions?user_id=eq.{user_id}&sequence_id=eq.{request.sequence}"
     existing_versions_req = requests.get(get_url, headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {token}"})
     
@@ -227,14 +247,11 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
     if existing_versions_req.status_code == 200:
         records = existing_versions_req.json()
         existing_row = next((r for r in records if r['topic'] == clean_topic), None)
-        
         if existing_row:
             version_history = existing_row['versions']
             row_id = existing_row['id']
-            print(f"Database row found. Current saved versions: {len(version_history)}")
 
     if not version_history:
-        print("No history found. Creating original baseline.")
         version_history.append({
             "title": request.card_title,
             "shortText": "Original Explanation",
@@ -270,5 +287,4 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
         print(f"\nCRITICAL DATABASE BLOCK: {error_msg}\n")
         raise HTTPException(status_code=500, detail=f"Database rejected save: {error_msg}")
 
-    print(f"Success! Array length is now {len(version_history)} and securely saved to cloud.")
     return {"versions": version_history, "current_version_index": len(version_history) - 1}
