@@ -114,7 +114,7 @@ async def generate_learning_chain(request: TopicRequest, authorization: str = He
             openrouter_response = requests.post(
                 url="https://openrouter.ai/api/v1/chat/completions",
                 headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json", "HTTP-Referer": "https://neurondeck.vercel.app", "X-Title": "NeuronDeck"},
-                json={"model": "openai/gpt-oss-20b:free", "messages": [{"role": "user", "content": prompt}]}
+                json={"model": "google/gemma-4-26b-a4b-it:free", "messages": [{"role": "user", "content": prompt}]}
             )
             
             response_json = openrouter_response.json()
@@ -202,7 +202,7 @@ async def clarify_card(request: ClarifyRequest, authorization: str = Header(None
         openrouter_response = requests.post(
             url="https://openrouter.ai/api/v1/chat/completions",
             headers={"Authorization": f"Bearer {OPENROUTER_API_KEY}", "Content-Type": "application/json"},
-            json={"model": "openai/gpt-oss-20b:free", "messages": [{"role": "user", "content": prompt}]}
+            json={"model": "google/gemma-4-26b-a4b-it:free", "messages": [{"role": "user", "content": prompt}]}
         )
         
         response_json = openrouter_response.json()
